@@ -20,9 +20,12 @@ jobs:
         working-directory: firefox
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip openssl
+          sudo apt-get install -y python3 python3-venv openssl
           export MOZ_AUTOMATION=1
-          MOZBUILD_STATE_PATH="$HOME/.mozbuild" ./mach bootstrap --application-choice=browser
+          export MOZBUILD_STATE_PATH="$HOME/.mozbuild"
+          python3 -m venv "$HOME/.mozbuild/mach-venv"
+          source "$HOME/.mozbuild/mach-venv/bin/activate"
+          ./mach bootstrap --application-choice=browser
 
       - name: Initialize analysis
         uses: github/codeql-action/init@v3
