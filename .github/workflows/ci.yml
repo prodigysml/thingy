@@ -21,7 +21,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip openssl
-          ./mach bootstrap --no-interactive --application-choice=browser
+          export MOZ_AUTOMATION=1
+          MOZBUILD_STATE_PATH="$HOME/.mozbuild" ./mach bootstrap --application-choice=browser
 
       - name: Initialize analysis
         uses: github/codeql-action/init@v3
