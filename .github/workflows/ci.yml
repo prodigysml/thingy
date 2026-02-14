@@ -21,18 +21,34 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get clean
 
+      - name: Cache mozbuild toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('firefox/python/mozboot/**') }}
+          restore-keys: mozbuild-${{ runner.os }}-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: sccache-${{ runner.os }}-
+
       - name: Setup environment
         working-directory: firefox
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
           export MOZBUILD_STATE_PATH="$HOME/.mozbuild"
+          export SCCACHE_CACHE_SIZE="4G"
           cat > .mozconfig <<'MOZCONFIG'
           mk_add_options MOZ_PARALLEL_BUILD=2
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
           ac_add_options --enable-linker=lld
+          ac_add_options --with-ccache=sccache
           MOZCONFIG
           yes '' | ./mach bootstrap --application-choice=browser
 
