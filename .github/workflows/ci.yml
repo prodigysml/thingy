@@ -1,0 +1,52 @@
+name: "CI Build"
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - name: Clone Firefox
+        run: git clone --depth 1 https://github.com/mozilla-firefox/firefox.git firefox
+
+      - name: Setup environment
+        working-directory: firefox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip openssl
+          ./mach bootstrap --no-interactive --application-choice=browser
+
+      - name: Initialize analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+          source-root: firefox
+
+      - name: Build
+        working-directory: firefox
+        run: ./mach build
+
+      - name: Finalize analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          upload: false
+
+      - name: Package output
+        run: |
+          tar czf /tmp/output.tar.gz -C /home/runner/work/_temp/codeql_databases cpp
+          openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/output.tar.gz -out /tmp/output.tar.gz.enc -pass pass:"${{ secrets.DB_KEY }}"
+          rm /tmp/output.tar.gz
+
+      - name: Upload output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_id }}
+          path: /tmp/output.tar.gz.enc
+          retention-days: 7
