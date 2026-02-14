@@ -16,12 +16,24 @@ jobs:
       - name: Clone Firefox
         run: git clone --depth 1 https://github.com/mozilla-firefox/firefox.git firefox
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
       - name: Setup environment
         working-directory: firefox
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
           export MOZBUILD_STATE_PATH="$HOME/.mozbuild"
+          cat > .mozconfig <<'MOZCONFIG'
+          mk_add_options MOZ_PARALLEL_BUILD=2
+          ac_add_options --enable-optimize
+          ac_add_options --disable-debug
+          ac_add_options --disable-tests
+          ac_add_options --enable-linker=lld
+          MOZCONFIG
           yes '' | ./mach bootstrap --application-choice=browser
 
       - name: Initialize analysis
