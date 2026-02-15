@@ -72,6 +72,42 @@ jobs:
         working-directory: firefox
         run: ./mach build
 
+      - name: Upload unfinalized database
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-db-unfinalized
+          path: /home/runner/work/_temp/codeql_databases
+          compression-level: 6
+          retention-days: 1
+
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: build
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - name: Install CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+
+      - name: Download unfinalized database
+        uses: actions/download-artifact@v4
+        with:
+          name: codeql-db-unfinalized
+          path: /home/runner/work/_temp/codeql_databases
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       - name: Finalize database
         run: |
           "${CODEQL_DIST}/codeql" database finalize --threads=4 --ram=14576 /home/runner/work/_temp/codeql_databases/cpp
