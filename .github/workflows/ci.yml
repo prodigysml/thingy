@@ -51,7 +51,7 @@ jobs:
           export MOZBUILD_STATE_PATH="$HOME/.mozbuild"
           export SCCACHE_CACHE_SIZE="4G"
           cat > .mozconfig <<'MOZCONFIG'
-          mk_add_options MOZ_PARALLEL_BUILD=4
+          mk_add_options MOZ_PARALLEL_BUILD=8
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
@@ -72,10 +72,9 @@ jobs:
         working-directory: firefox
         run: ./mach build
 
-      - name: Finalize analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          upload: false
+      - name: Finalize database
+        run: |
+          "${CODEQL_DIST}/codeql" database finalize --threads=4 --ram=14576 /home/runner/work/_temp/codeql_databases/cpp
 
       - name: Package output
         run: |
