@@ -10,7 +10,7 @@ jobs:
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
-      SCCACHE_CACHE_SIZE: 4G
+      SCCACHE_CACHE_SIZE: 8G
       SCCACHE_DIR: /home/runner/.cache/sccache
     permissions:
       security-events: write
@@ -75,6 +75,15 @@ jobs:
 
       - name: Build
         run: ./mach build
+
+      - name: Save unfinalized database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-db-unfinalized-${{ github.run_id }}
+          path: /home/runner/work/_temp/codeql_databases
+          compression-level: 6
+          retention-days: 1
 
       - name: Finalize and analyze
         uses: github/codeql-action/analyze@v4
