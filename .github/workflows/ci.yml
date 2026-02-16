@@ -65,7 +65,7 @@ jobs:
           yes '' | ./mach bootstrap --application-choice=browser
 
       - name: Initialize analysis
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: cpp
           source-root: firefox
@@ -92,7 +92,7 @@ jobs:
       contents: read
     steps:
       - name: Install CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: cpp
 
