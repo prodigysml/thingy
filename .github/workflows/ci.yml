@@ -15,10 +15,20 @@ jobs:
     permissions:
       security-events: write
       actions: read
-      contents: read
+      contents: write
     steps:
-      - name: Clone Firefox
-        run: git clone --depth 1 https://github.com/mozilla-firefox/firefox.git firefox
+      - uses: actions/checkout@v4
+
+      - name: Sync upstream
+        run: |
+          git remote add upstream https://github.com/mozilla-firefox/firefox.git
+          git fetch upstream main --depth 1
+          git reset --hard upstream/main
+
+      - name: Push sync
+        run: git push origin main --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Free disk space
         run: |
@@ -37,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.mozbuild
-          key: mozbuild-${{ runner.os }}-${{ hashFiles('firefox/python/mozboot/**') }}
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
           restore-keys: mozbuild-${{ runner.os }}-
 
       - name: Cache sccache
@@ -48,7 +58,6 @@ jobs:
           restore-keys: sccache-${{ runner.os }}-
 
       - name: Setup environment
-        working-directory: firefox
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
@@ -68,58 +77,19 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
-          source-root: firefox
 
       - name: Build
-        working-directory: firefox
         run: ./mach build
 
-      - name: Upload unfinalized database
-        uses: actions/upload-artifact@v4
+      - name: Finalize and analyze
+        uses: github/codeql-action/analyze@v4
         with:
-          name: codeql-db-unfinalized
-          path: /home/runner/work/_temp/codeql_databases
-          compression-level: 6
-          retention-days: 1
+          upload: false
 
-  finalize:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    needs: build
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    steps:
-      - name: Install CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: cpp
-
-      - name: Recreate source directory
-        run: mkdir -p /home/runner/work/thingy/thingy/firefox
-
-      - name: Download unfinalized database
-        uses: actions/download-artifact@v4
-        with:
-          name: codeql-db-unfinalized
-          path: /home/runner/work/_temp/codeql_databases
-
-      - name: Add swap
+      - name: Package database
         run: |
-          sudo swapoff -a
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
-      - name: Finalize database
-        run: |
-          "${CODEQL_DIST}/codeql" database finalize --threads=4 --ram=14576 /home/runner/work/_temp/codeql_databases/cpp
-
-      - name: Package output
-        run: |
-          tar czf /tmp/output.tar.gz -C /home/runner/work/_temp/codeql_databases cpp
+          DB_PATH="/home/runner/work/_temp/codeql_databases/cpp"
+          tar czf /tmp/output.tar.gz -C "$(dirname "$DB_PATH")" cpp
           openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/output.tar.gz -out /tmp/output.tar.gz.enc -pass pass:"${{ secrets.DB_KEY }}"
           rm /tmp/output.tar.gz
 
