@@ -96,6 +96,9 @@ jobs:
         with:
           languages: cpp
 
+      - name: Recreate source directory
+        run: mkdir -p /home/runner/work/thingy/thingy/firefox
+
       - name: Download unfinalized database
         uses: actions/download-artifact@v4
         with:
