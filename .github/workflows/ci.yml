@@ -8,6 +8,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      MOZBUILD_STATE_PATH: /home/runner/.mozbuild
+      SCCACHE_CACHE_SIZE: 4G
+      SCCACHE_DIR: /home/runner/.cache/sccache
     permissions:
       security-events: write
       actions: read
@@ -48,8 +52,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
-          export MOZBUILD_STATE_PATH="$HOME/.mozbuild"
-          export SCCACHE_CACHE_SIZE="4G"
           cat > .mozconfig <<'MOZCONFIG'
           mk_add_options MOZ_PARALLEL_BUILD=8
           ac_add_options --enable-optimize
