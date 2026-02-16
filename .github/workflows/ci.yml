@@ -15,7 +15,7 @@ jobs:
     permissions:
       security-events: write
       actions: read
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -24,11 +24,6 @@ jobs:
           git remote add upstream https://github.com/mozilla-firefox/firefox.git
           git fetch upstream main --depth 1
           git reset --hard upstream/main
-
-      - name: Push sync
-        run: git push origin main --force
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Free disk space
         run: |
