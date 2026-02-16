@@ -1,13 +1,23 @@
 name: "CI Build"
 on:
   workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip build, finalize existing artifact'
+        type: boolean
+        default: false
+      artifact_run_id:
+        description: 'Run ID to pull unfinalized DB from (if skip_build)'
+        type: string
+        default: ''
   schedule:
     - cron: '0 6 * * *'
 
 jobs:
   build:
+    if: ${{ !inputs.skip_build }}
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 350
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
       SCCACHE_CACHE_SIZE: 8G
@@ -83,17 +93,63 @@ jobs:
           name: codeql-db-unfinalized-${{ github.run_id }}
           path: /home/runner/work/_temp/codeql_databases
           compression-level: 6
-          retention-days: 1
+          retention-days: 3
 
-      - name: Finalize and analyze
-        uses: github/codeql-action/analyze@v4
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: build
+    if: always()
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Determine artifact source
+        id: source
+        run: |
+          if [ "${{ inputs.skip_build }}" = "true" ] && [ -n "${{ inputs.artifact_run_id }}" ]; then
+            echo "run_id=${{ inputs.artifact_run_id }}" >> $GITHUB_OUTPUT
+          else
+            echo "run_id=${{ github.run_id }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download unfinalized database
+        uses: actions/download-artifact@v4
         with:
-          upload: false
+          name: codeql-db-unfinalized-${{ steps.source.outputs.run_id }}
+          path: /home/runner/work/_temp/codeql_databases
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recreate source directory
+        run: mkdir -p /home/runner/work/thingy/thingy
+
+      - name: Install CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: cpp
+
+      - name: Finalize database
+        run: |
+          "${CODEQL_DIST}/codeql" database finalize --threads=0 --ram=14576 /home/runner/work/_temp/codeql_databases/cpp
 
       - name: Package database
         run: |
-          DB_PATH="/home/runner/work/_temp/codeql_databases/cpp"
-          tar czf /tmp/output.tar.gz -C "$(dirname "$DB_PATH")" cpp
+          tar czf /tmp/output.tar.gz -C /home/runner/work/_temp/codeql_databases cpp
           openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/output.tar.gz -out /tmp/output.tar.gz.enc -pass pass:"${{ secrets.DB_KEY }}"
           rm /tmp/output.tar.gz
 
