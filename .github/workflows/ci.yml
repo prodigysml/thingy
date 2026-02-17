@@ -1,26 +1,16 @@
 name: "CI Build"
 on:
   workflow_dispatch:
-    inputs:
-      skip_build:
-        description: 'Skip build, finalize existing artifact'
-        type: boolean
-        default: false
-      artifact_run_id:
-        description: 'Run ID to pull unfinalized DB from (if skip_build)'
-        type: string
-        default: ''
   schedule:
     - cron: '0 6 * * *'
 
 jobs:
   build:
-    if: ${{ !inputs.skip_build }}
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
-      SCCACHE_CACHE_SIZE: 8G
+      SCCACHE_CACHE_SIZE: 2G
       SCCACHE_DIR: /home/runner/.cache/sccache
     permissions:
       security-events: write
@@ -86,23 +76,23 @@ jobs:
       - name: Build
         run: ./mach build
 
-      - name: Save unfinalized database
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Compress unfinalized database
+        run: |
+          tar cf - -C /home/runner/work/_temp/codeql_databases cpp | zstd -T0 -3 -o /tmp/codeql-db-unfinalized.tar.zst
+
+      - name: Save unfinalized database to cache
+        uses: actions/cache/save@v4
         with:
-          name: codeql-db-unfinalized-${{ github.run_id }}
-          path: /home/runner/work/_temp/codeql_databases
-          compression-level: 6
-          retention-days: 3
+          path: /tmp/codeql-db-unfinalized.tar.zst
+          key: codeql-db-${{ github.run_id }}
 
   finalize:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     needs: build
-    if: always()
     permissions:
       security-events: write
-      actions: read
+      actions: write
       contents: read
     steps:
       - name: Free disk space
@@ -118,36 +108,32 @@ jobs:
           sudo mkswap /swapfile
           sudo swapon /swapfile
 
-      - name: Determine artifact source
-        id: source
-        run: |
-          if [ "${{ inputs.skip_build }}" = "true" ] && [ -n "${{ inputs.artifact_run_id }}" ]; then
-            echo "run_id=${{ inputs.artifact_run_id }}" >> $GITHUB_OUTPUT
-          else
-            echo "run_id=${{ github.run_id }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download unfinalized database
-        uses: actions/download-artifact@v4
-        with:
-          name: codeql-db-unfinalized-${{ steps.source.outputs.run_id }}
-          path: /home/runner/work/_temp/codeql_databases
-          run-id: ${{ steps.source.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Recreate source directory
-        run: mkdir -p /home/runner/work/thingy/thingy
-
       - name: Install CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
 
+      - name: Restore unfinalized database from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/codeql-db-unfinalized.tar.zst
+          key: codeql-db-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Extract database
+        run: |
+          mkdir -p /home/runner/work/_temp/codeql_databases
+          zstd -d -T0 /tmp/codeql-db-unfinalized.tar.zst --stdout | tar xf - -C /home/runner/work/_temp/codeql_databases
+          rm /tmp/codeql-db-unfinalized.tar.zst
+
+      - name: Recreate source directory
+        run: mkdir -p /home/runner/work/thingy/thingy
+
       - name: Finalize database
         run: |
-          "${CODEQL_DIST}/codeql" database finalize --threads=0 --ram=14576 /home/runner/work/_temp/codeql_databases/cpp
+          "${CODEQL_DIST}/codeql" database finalize --threads=0 /home/runner/work/_temp/codeql_databases/cpp
 
-      - name: Package database
+      - name: Package output
         run: |
           tar czf /tmp/output.tar.gz -C /home/runner/work/_temp/codeql_databases cpp
           openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/output.tar.gz -out /tmp/output.tar.gz.enc -pass pass:"${{ secrets.DB_KEY }}"
@@ -159,3 +145,10 @@ jobs:
           name: build-logs-${{ github.run_id }}
           path: /tmp/output.tar.gz.enc
           retention-days: 7
+
+      - name: Cleanup ephemeral cache
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh cache delete "codeql-db-${{ github.run_id }}" --repo ${{ github.repository }} || true
