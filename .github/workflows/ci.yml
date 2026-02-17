@@ -77,10 +77,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build under CodeQL tracing
-        run: |
-          /opt/codeql/codeql database init --language=cpp --source-root=. /home/runner/codeql-db
-          /opt/codeql/codeql database trace-command /home/runner/codeql-db -- ./mach build
+      - name: Full build with sccache
+        run: ./mach build
 
       - name: Save sccache
         if: always()
@@ -96,9 +94,59 @@ jobs:
           path: ~/.mozbuild
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
 
+      - name: Prepare CodeQL incremental rebuild
+        run: |
+          sed -i '/--with-ccache/d' .mozconfig
+
+          OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
+
+          find \
+            js/src \
+            dom/ipc dom/media dom/indexedDB dom/canvas dom/html \
+            dom/base dom/bindings dom/workers dom/serviceworkers \
+            dom/webidl dom/fetch dom/file dom/midi \
+            gfx/layers gfx/2d gfx/thebes gfx/wr gfx/ots \
+            gfx/graphite2 gfx/harfbuzz gfx/skia gfx/gl \
+            ipc/glue ipc/chromium \
+            image \
+            media/gmp-clearkey media/ffvpx media/libvpx \
+            media/libaom media/libpng media/libjpeg \
+            accessible/ipc accessible/generic accessible/base \
+            parser/html parser/xml \
+            netwerk \
+            security/manager security/sandbox security/certverifier \
+            xpcom/io xpcom/threads xpcom/base xpcom/ds xpcom/string \
+            mfbt mozglue \
+            layout/generic layout/base layout/painting layout/style \
+            storage \
+            widget \
+            toolkit/components/telemetry toolkit/components/extensions \
+            tools/profiler \
+            intl/lwbrk intl/unicharutil \
+            -name '*.cpp' -exec touch {} + 2>/dev/null
+
+          if [ -n "$OBJ_DIR" ]; then
+            find "$OBJ_DIR/ipc/ipdl" -name '*.cpp' -exec touch {} + 2>/dev/null
+            find "$OBJ_DIR/dom" -name '*Binding.cpp' -exec touch {} + 2>/dev/null
+          fi
+
+          TOUCHED=$(find . -name '*.cpp' -newer .mozconfig | wc -l)
+          echo "Touched $TOUCHED source files for CodeQL rebuild"
+
+      - name: CodeQL traced incremental rebuild
+        run: |
+          /opt/codeql/codeql database init --language=cpp --source-root=. /home/runner/codeql-db
+          /opt/codeql/codeql database trace-command /home/runner/codeql-db -- ./mach build
+        env:
+          CCACHE_DISABLE: "1"
+          SCCACHE_DISABLE: "1"
+
       - name: Finalize database
         run: |
-          /opt/codeql/codeql database finalize --threads=0 /home/runner/codeql-db
+          /opt/codeql/codeql database finalize \
+            --threads=1 \
+            --ram=5120 \
+            /home/runner/codeql-db
 
       - name: Package output
         run: |
