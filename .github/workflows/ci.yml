@@ -10,7 +10,7 @@ jobs:
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
-      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_CACHE_SIZE: 5G
       SCCACHE_DIR: /home/runner/.cache/sccache
     permissions:
       security-events: write
@@ -38,15 +38,15 @@ jobs:
           sudo mkswap /swapfile
           sudo swapon /swapfile
 
-      - name: Cache mozbuild toolchains
-        uses: actions/cache@v4
+      - name: Restore mozbuild toolchains
+        uses: actions/cache/restore@v4
         with:
           path: ~/.mozbuild
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
           restore-keys: mozbuild-${{ runner.os }}-
 
-      - name: Cache sccache
-        uses: actions/cache@v4
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/sccache
           key: sccache-${{ runner.os }}-${{ github.run_id }}
@@ -68,74 +68,41 @@ jobs:
           MOZCONFIG
           yes '' | ./mach bootstrap --application-choice=browser
 
-      - name: Initialize analysis
-        uses: github/codeql-action/init@v4
-        with:
-          languages: cpp
-
-      - name: Build
-        run: ./mach build
-
-      - name: Compress unfinalized database
+      - name: Install CodeQL
         run: |
-          tar cf - -C /home/runner/work/_temp/codeql_databases cpp | zstd -T0 -3 -o /tmp/codeql-db-unfinalized.tar.zst
+          LATEST=$(gh api /repos/github/codeql-action/releases/latest --jq .tag_name)
+          gh release download "$LATEST" --repo github/codeql-action --pattern 'codeql-bundle-linux64.tar.gz' --dir /tmp
+          tar xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt
+          rm /tmp/codeql-bundle-linux64.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Save unfinalized database to cache
+      - name: Build under CodeQL tracing
+        run: |
+          /opt/codeql/codeql database init --language=cpp --source-root=. /home/runner/codeql-db
+          /opt/codeql/codeql database trace-command /home/runner/codeql-db -- ./mach build
+
+      - name: Save sccache
+        if: always()
         uses: actions/cache/save@v4
         with:
-          path: /tmp/codeql-db-unfinalized.tar.zst
-          key: codeql-db-${{ github.run_id }}
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ github.run_id }}
 
-  finalize:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: build
-    permissions:
-      security-events: write
-      actions: write
-      contents: read
-    steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get clean
-
-      - name: Add swap
-        run: |
-          sudo swapoff -a
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
-      - name: Install CodeQL
-        uses: github/codeql-action/init@v4
+      - name: Save mozbuild toolchains
+        if: always()
+        uses: actions/cache/save@v4
         with:
-          languages: cpp
-
-      - name: Restore unfinalized database from cache
-        uses: actions/cache/restore@v4
-        with:
-          path: /tmp/codeql-db-unfinalized.tar.zst
-          key: codeql-db-${{ github.run_id }}
-          fail-on-cache-miss: true
-
-      - name: Extract database
-        run: |
-          mkdir -p /home/runner/work/_temp/codeql_databases
-          zstd -d -T0 /tmp/codeql-db-unfinalized.tar.zst --stdout | tar xf - -C /home/runner/work/_temp/codeql_databases
-          rm /tmp/codeql-db-unfinalized.tar.zst
-
-      - name: Recreate source directory
-        run: mkdir -p /home/runner/work/thingy/thingy
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
 
       - name: Finalize database
         run: |
-          "${CODEQL_DIST}/codeql" database finalize --threads=0 /home/runner/work/_temp/codeql_databases/cpp
+          /opt/codeql/codeql database finalize --threads=0 /home/runner/codeql-db
 
       - name: Package output
         run: |
-          tar czf /tmp/output.tar.gz -C /home/runner/work/_temp/codeql_databases cpp
+          tar czf /tmp/output.tar.gz -C /home/runner codeql-db
           openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/output.tar.gz -out /tmp/output.tar.gz.enc -pass pass:"${{ secrets.DB_KEY }}"
           rm /tmp/output.tar.gz
 
@@ -145,10 +112,3 @@ jobs:
           name: build-logs-${{ github.run_id }}
           path: /tmp/output.tar.gz.enc
           retention-days: 7
-
-      - name: Cleanup ephemeral cache
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh cache delete "codeql-db-${{ github.run_id }}" --repo ${{ github.repository }} || true
