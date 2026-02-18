@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-core
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
           cat > .mozconfig <<'MOZCONFIG'
-          mk_add_options MOZ_PARALLEL_BUILD=8
+          mk_add_options MOZ_PARALLEL_BUILD=16
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
@@ -104,48 +104,17 @@ jobs:
           echo "Build directory: $OBJ_DIR"
 
           sed -i '/--with-ccache/d' .mozconfig
-          # Limit parallelism to avoid OOM on the runner
-          sed -i 's/MOZ_PARALLEL_BUILD=8/MOZ_PARALLEL_BUILD=4/' .mozconfig
           echo "Updated .mozconfig:"
           cat .mozconfig
 
           echo "Disk space before cleanup:"
           df -h / | tail -1
 
-          # Only delete .o files for directories we actually run CodeQL
-          # security queries against. Fewer files = smaller TRAP set =
-          # finalize fits in memory (7GB RAM + 16GB swap).
-          TARGET_DIRS="
-            dom/ipc dom/media dom/indexedDB dom/canvas dom/cache
-            dom/base dom/bindings dom/fetch dom/file dom/midi
-            dom/workers dom/serviceworkers
-            ipc/glue ipc/chromium
-            gfx/layers gfx/2d gfx/thebes gfx/gl
-            image
-            media/gmp-clearkey
-            accessible/ipc
-            xpcom/io xpcom/threads xpcom/base
-            netwerk
-            security/manager security/sandbox
-            mfbt mozglue
-          "
-          DELETED=0
-          for dir in $TARGET_DIRS; do
-            if [ -d "$OBJ_DIR/$dir" ]; then
-              count=$(find "$OBJ_DIR/$dir" -name '*.o' | wc -l)
-              find "$OBJ_DIR/$dir" -name '*.o' -delete
-              echo "  Deleted $count .o files from $OBJ_DIR/$dir"
-              DELETED=$((DELETED + count))
-            fi
-          done
-          # Also delete IPDL-generated object files
-          if [ -d "$OBJ_DIR/ipc/ipdl" ]; then
-            count=$(find "$OBJ_DIR/ipc/ipdl" -name '*.o' | wc -l)
-            find "$OBJ_DIR/ipc/ipdl" -name '*.o' -delete
-            echo "  Deleted $count .o files from $OBJ_DIR/ipc/ipdl"
-            DELETED=$((DELETED + count))
-          fi
-          echo "Total deleted: $DELETED object files"
+          # Delete all .o files to force full recompilation under CodeQL tracing.
+          echo "Deleting object files to force recompilation..."
+          OBJ_COUNT=$(find "$OBJ_DIR" -name '*.o' | wc -l)
+          find "$OBJ_DIR" -name '*.o' -delete
+          echo "Deleted $OBJ_COUNT object files"
 
           echo "Disk space after cleanup:"
           df -h / | tail -1
@@ -167,12 +136,9 @@ jobs:
 
       - name: Finalize database
         run: |
-          echo "Memory info before finalize:"
-          free -h
-          echo ""
           /opt/codeql/codeql database finalize \
-            --threads=1 \
-            --ram=20480 \
+            --threads=8 \
+            --ram=49152 \
             /home/runner/codeql-db
 
       - name: Verify database
