@@ -103,23 +103,42 @@ jobs:
           fi
           echo "Build directory: $OBJ_DIR"
 
-          # Remove sccache from .mozconfig so the real compiler runs directly.
-          # CodeQL traces compiler invocations via LD_PRELOAD; if sccache
-          # serves a cache hit it skips the compiler entirely, so CodeQL
-          # captures nothing.
           sed -i '/--with-ccache/d' .mozconfig
-          echo "Updated .mozconfig (removed sccache):"
+          # Limit parallelism to avoid OOM on the runner
+          sed -i 's/MOZ_PARALLEL_BUILD=8/MOZ_PARALLEL_BUILD=4/' .mozconfig
+          echo "Updated .mozconfig:"
           cat .mozconfig
 
-          # Delete all object files to force the build system to recompile.
-          # The previous "touch sources" approach didn't work because the
-          # build system's dependency tracking ignored timestamp-only changes.
-          echo "Deleting object files to force recompilation..."
-          OBJ_COUNT_BEFORE=$(find "$OBJ_DIR" -name '*.o' | wc -l)
-          echo "Object files before: $OBJ_COUNT_BEFORE"
-          find "$OBJ_DIR" -name '*.o' -delete
-          OBJ_COUNT_AFTER=$(find "$OBJ_DIR" -name '*.o' | wc -l)
-          echo "Object files after: $OBJ_COUNT_AFTER"
+          echo "Disk space before cleanup:"
+          df -h / | tail -1
+
+          # Only delete .o files for directories relevant to security analysis.
+          # A full rebuild OOMs the GitHub Actions runner.
+          TARGET_DIRS="
+            dom ipc gfx image media accessible parser netwerk
+            security xpcom mfbt mozglue layout storage widget
+            toolkit/components/extensions caps
+          "
+          DELETED=0
+          for dir in $TARGET_DIRS; do
+            if [ -d "$OBJ_DIR/$dir" ]; then
+              count=$(find "$OBJ_DIR/$dir" -name '*.o' | wc -l)
+              find "$OBJ_DIR/$dir" -name '*.o' -delete
+              echo "  Deleted $count .o files from $OBJ_DIR/$dir"
+              DELETED=$((DELETED + count))
+            fi
+          done
+          # Also delete IPDL-generated object files
+          if [ -d "$OBJ_DIR/ipc/ipdl" ]; then
+            count=$(find "$OBJ_DIR/ipc/ipdl" -name '*.o' | wc -l)
+            find "$OBJ_DIR/ipc/ipdl" -name '*.o' -delete
+            echo "  Deleted $count .o files from $OBJ_DIR/ipc/ipdl"
+            DELETED=$((DELETED + count))
+          fi
+          echo "Total deleted: $DELETED object files"
+
+          echo "Disk space after cleanup:"
+          df -h / | tail -1
 
       - name: CodeQL traced rebuild
         run: |
@@ -130,7 +149,11 @@ jobs:
 
           /opt/codeql/codeql database trace-command \
             /home/runner/codeql-db \
-            -- ./mach build
+            -- ./mach build 2>&1 | tee /tmp/codeql-build.log
+
+          echo ""
+          echo "Disk space after traced rebuild:"
+          df -h / | tail -1
 
       - name: Finalize database
         run: |
