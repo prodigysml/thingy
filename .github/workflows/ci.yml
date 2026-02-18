@@ -94,49 +94,43 @@ jobs:
           path: ~/.mozbuild
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
 
-      - name: Touch sources for CodeQL incremental rebuild
+      - name: Prepare for CodeQL rebuild
         run: |
           OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
-
-          find \
-            js/src \
-            dom/ipc dom/media dom/indexedDB dom/canvas dom/html \
-            dom/base dom/bindings dom/workers dom/serviceworkers \
-            dom/webidl dom/fetch dom/file dom/midi \
-            gfx/layers gfx/2d gfx/thebes gfx/wr gfx/ots \
-            gfx/graphite2 gfx/harfbuzz gfx/skia gfx/gl \
-            ipc/glue ipc/chromium \
-            image \
-            media/gmp-clearkey media/ffvpx media/libvpx \
-            media/libaom media/libpng media/libjpeg \
-            accessible/ipc accessible/generic accessible/base \
-            parser/html parser/xml \
-            netwerk \
-            security/manager security/sandbox security/certverifier \
-            xpcom/io xpcom/threads xpcom/base xpcom/ds xpcom/string \
-            mfbt mozglue \
-            layout/generic layout/base layout/painting layout/style \
-            storage \
-            widget \
-            toolkit/components/telemetry toolkit/components/extensions \
-            tools/profiler \
-            intl/lwbrk intl/unicharutil \
-            -name '*.cpp' -exec touch {} + 2>/dev/null
-
-          if [ -n "$OBJ_DIR" ]; then
-            find "$OBJ_DIR/ipc/ipdl" -name '*.cpp' -exec touch {} + 2>/dev/null
-            find "$OBJ_DIR/dom" -name '*Binding.cpp' -exec touch {} + 2>/dev/null
+          if [ -z "$OBJ_DIR" ]; then
+            echo "ERROR: No obj-* directory found after build"
+            exit 1
           fi
+          echo "Build directory: $OBJ_DIR"
 
-          TOUCHED=$(find . -name '*.cpp' -newer .mozconfig | wc -l)
-          echo "Touched $TOUCHED source files for CodeQL rebuild"
+          # Remove sccache from .mozconfig so the real compiler runs directly.
+          # CodeQL traces compiler invocations via LD_PRELOAD; if sccache
+          # serves a cache hit it skips the compiler entirely, so CodeQL
+          # captures nothing.
+          sed -i '/--with-ccache/d' .mozconfig
+          echo "Updated .mozconfig (removed sccache):"
+          cat .mozconfig
 
-      - name: CodeQL traced incremental rebuild
+          # Delete all object files to force the build system to recompile.
+          # The previous "touch sources" approach didn't work because the
+          # build system's dependency tracking ignored timestamp-only changes.
+          echo "Deleting object files to force recompilation..."
+          OBJ_COUNT_BEFORE=$(find "$OBJ_DIR" -name '*.o' | wc -l)
+          echo "Object files before: $OBJ_COUNT_BEFORE"
+          find "$OBJ_DIR" -name '*.o' -delete
+          OBJ_COUNT_AFTER=$(find "$OBJ_DIR" -name '*.o' | wc -l)
+          echo "Object files after: $OBJ_COUNT_AFTER"
+
+      - name: CodeQL traced rebuild
         run: |
-          /opt/codeql/codeql database init --language=cpp --source-root=. /home/runner/codeql-db
-          /opt/codeql/codeql database trace-command /home/runner/codeql-db -- ./mach build
-        env:
-          SCCACHE_DISABLE: "1"
+          /opt/codeql/codeql database init \
+            --language=cpp \
+            --source-root=. \
+            /home/runner/codeql-db
+
+          /opt/codeql/codeql database trace-command \
+            /home/runner/codeql-db \
+            -- ./mach build
 
       - name: Finalize database
         run: |
@@ -144,6 +138,42 @@ jobs:
             --threads=1 \
             --ram=5120 \
             /home/runner/codeql-db
+
+      - name: Verify database
+        run: |
+          echo "=== Database info ==="
+          /opt/codeql/codeql database info /home/runner/codeql-db || true
+
+          echo ""
+          echo "=== Source archive file count ==="
+          SRC_COUNT=$(find /home/runner/codeql-db/src.zip -type f 2>/dev/null | wc -l || echo 0)
+          if [ -d /home/runner/codeql-db/src ]; then
+            SRC_COUNT=$(find /home/runner/codeql-db/src -type f | wc -l)
+          fi
+          echo "Source files in database: $SRC_COUNT"
+
+          if [ "$SRC_COUNT" -lt 100 ]; then
+            echo "ERROR: Database has fewer than 100 source files — something went wrong."
+            echo "Listing contents for debugging:"
+            find /home/runner/codeql-db -maxdepth 3 -type f | head -50
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Checking for key directories ==="
+          for dir in dom gfx ipc js xpcom security netwerk; do
+            count=0
+            if [ -d "/home/runner/codeql-db/src/$dir" ]; then
+              count=$(find "/home/runner/codeql-db/src/$dir" -name '*.cpp' | wc -l)
+            fi
+            echo "  $dir: $count .cpp files"
+            if [ "$count" -eq 0 ]; then
+              echo "  WARNING: no .cpp files found for $dir"
+            fi
+          done
+
+          echo ""
+          echo "Database verification passed."
 
       - name: Package output
         run: |
