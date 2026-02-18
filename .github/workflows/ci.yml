@@ -112,12 +112,22 @@ jobs:
           echo "Disk space before cleanup:"
           df -h / | tail -1
 
-          # Only delete .o files for directories relevant to security analysis.
-          # A full rebuild OOMs the GitHub Actions runner.
+          # Only delete .o files for directories we actually run CodeQL
+          # security queries against. Fewer files = smaller TRAP set =
+          # finalize fits in memory (7GB RAM + 16GB swap).
           TARGET_DIRS="
-            dom ipc gfx image media accessible parser netwerk
-            security xpcom mfbt mozglue layout storage widget
-            toolkit/components/extensions caps
+            dom/ipc dom/media dom/indexedDB dom/canvas dom/cache
+            dom/base dom/bindings dom/fetch dom/file dom/midi
+            dom/workers dom/serviceworkers
+            ipc/glue ipc/chromium
+            gfx/layers gfx/2d gfx/thebes gfx/gl
+            image
+            media/gmp-clearkey
+            accessible/ipc
+            xpcom/io xpcom/threads xpcom/base
+            netwerk
+            security/manager security/sandbox
+            mfbt mozglue
           "
           DELETED=0
           for dir in $TARGET_DIRS; do
@@ -157,9 +167,12 @@ jobs:
 
       - name: Finalize database
         run: |
+          echo "Memory info before finalize:"
+          free -h
+          echo ""
           /opt/codeql/codeql database finalize \
             --threads=1 \
-            --ram=5120 \
+            --ram=20480 \
             /home/runner/codeql-db
 
       - name: Verify database
