@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest-16-core
+    runs-on: ubuntu-latest-8-core
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
           cat > .mozconfig <<'MOZCONFIG'
-          mk_add_options MOZ_PARALLEL_BUILD=16
+          mk_add_options MOZ_PARALLEL_BUILD=8
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
@@ -137,8 +137,8 @@ jobs:
       - name: Finalize database
         run: |
           /opt/codeql/codeql database finalize \
-            --threads=8 \
-            --ram=49152 \
+            --threads=4 \
+            --ram=24576 \
             /home/runner/codeql-db
 
       - name: Verify database
