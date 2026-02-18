@@ -94,10 +94,8 @@ jobs:
           path: ~/.mozbuild
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
 
-      - name: Prepare CodeQL incremental rebuild
+      - name: Touch sources for CodeQL incremental rebuild
         run: |
-          sed -i '/--with-ccache/d' .mozconfig
-
           OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
 
           find \
@@ -138,7 +136,6 @@ jobs:
           /opt/codeql/codeql database init --language=cpp --source-root=. /home/runner/codeql-db
           /opt/codeql/codeql database trace-command /home/runner/codeql-db -- ./mach build
         env:
-          CCACHE_DISABLE: "1"
           SCCACHE_DISABLE: "1"
 
       - name: Finalize database
