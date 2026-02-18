@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest-8-core
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
           cat > .mozconfig <<'MOZCONFIG'
-          mk_add_options MOZ_PARALLEL_BUILD=8
+          mk_add_options MOZ_PARALLEL_BUILD=4
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
@@ -104,17 +104,45 @@ jobs:
           echo "Build directory: $OBJ_DIR"
 
           sed -i '/--with-ccache/d' .mozconfig
+          sed -i 's/MOZ_PARALLEL_BUILD=4/MOZ_PARALLEL_BUILD=2/' .mozconfig
           echo "Updated .mozconfig:"
           cat .mozconfig
 
           echo "Disk space before cleanup:"
           df -h / | tail -1
 
-          # Delete all .o files to force full recompilation under CodeQL tracing.
-          echo "Deleting object files to force recompilation..."
-          OBJ_COUNT=$(find "$OBJ_DIR" -name '*.o' | wc -l)
-          find "$OBJ_DIR" -name '*.o' -delete
-          echo "Deleted $OBJ_COUNT object files"
+          # Only delete .o files for security-critical directories.
+          # Tracing the full codebase produces too many TRAP files for
+          # CodeQL finalize to handle in 7GB RAM (even with 16GB swap).
+          TARGET_DIRS="
+            dom/ipc dom/media dom/indexedDB dom/canvas dom/cache
+            dom/base dom/bindings dom/fetch dom/file dom/midi
+            ipc/glue
+            gfx/layers gfx/2d gfx/thebes
+            image
+            media/gmp-clearkey
+            accessible/ipc
+            xpcom/io xpcom/threads xpcom/base
+            netwerk/protocol netwerk/base netwerk/cache2
+            security/manager
+            mfbt
+          "
+          DELETED=0
+          for dir in $TARGET_DIRS; do
+            if [ -d "$OBJ_DIR/$dir" ]; then
+              count=$(find "$OBJ_DIR/$dir" -name '*.o' | wc -l)
+              find "$OBJ_DIR/$dir" -name '*.o' -delete
+              echo "  Deleted $count .o files from $OBJ_DIR/$dir"
+              DELETED=$((DELETED + count))
+            fi
+          done
+          if [ -d "$OBJ_DIR/ipc/ipdl" ]; then
+            count=$(find "$OBJ_DIR/ipc/ipdl" -name '*.o' | wc -l)
+            find "$OBJ_DIR/ipc/ipdl" -name '*.o' -delete
+            echo "  Deleted $count .o files from $OBJ_DIR/ipc/ipdl"
+            DELETED=$((DELETED + count))
+          fi
+          echo "Total deleted: $DELETED object files"
 
           echo "Disk space after cleanup:"
           df -h / | tail -1
@@ -128,17 +156,21 @@ jobs:
 
           /opt/codeql/codeql database trace-command \
             /home/runner/codeql-db \
-            -- ./mach build 2>&1 | tee /tmp/codeql-build.log
+            -- ./mach build
 
           echo ""
           echo "Disk space after traced rebuild:"
           df -h / | tail -1
 
+          echo "TRAP file count:"
+          find /home/runner/codeql-db -name '*.trap*' | wc -l
+
       - name: Finalize database
         run: |
+          free -h
           /opt/codeql/codeql database finalize \
-            --threads=4 \
-            --ram=24576 \
+            --threads=1 \
+            --ram=20480 \
             /home/runner/codeql-db
 
       - name: Verify database
@@ -148,30 +180,26 @@ jobs:
 
           echo ""
           echo "=== Source archive file count ==="
-          SRC_COUNT=$(find /home/runner/codeql-db/src.zip -type f 2>/dev/null | wc -l || echo 0)
+          SRC_COUNT=0
           if [ -d /home/runner/codeql-db/src ]; then
             SRC_COUNT=$(find /home/runner/codeql-db/src -type f | wc -l)
           fi
           echo "Source files in database: $SRC_COUNT"
 
           if [ "$SRC_COUNT" -lt 100 ]; then
-            echo "ERROR: Database has fewer than 100 source files — something went wrong."
-            echo "Listing contents for debugging:"
+            echo "ERROR: Database has fewer than 100 source files."
             find /home/runner/codeql-db -maxdepth 3 -type f | head -50
             exit 1
           fi
 
           echo ""
-          echo "=== Checking for key directories ==="
-          for dir in dom gfx ipc js xpcom security netwerk; do
+          echo "=== Key directories ==="
+          for dir in dom gfx ipc xpcom image media netwerk security accessible mfbt; do
             count=0
             if [ -d "/home/runner/codeql-db/src/$dir" ]; then
               count=$(find "/home/runner/codeql-db/src/$dir" -name '*.cpp' | wc -l)
             fi
             echo "  $dir: $count .cpp files"
-            if [ "$count" -eq 0 ]; then
-              echo "  WARNING: no .cpp files found for $dir"
-            fi
           done
 
           echo ""
