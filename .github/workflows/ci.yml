@@ -157,6 +157,7 @@ jobs:
           # No sccache — CodeQL must see real compiler invocations
           cat > .mozconfig <<'MOZCONFIG'
           mk_add_options MOZ_PARALLEL_BUILD=4
+          mk_add_options AUTOCLOBBER=1
           ac_add_options --enable-optimize
           ac_add_options --disable-debug
           ac_add_options --disable-tests
@@ -188,19 +189,12 @@ jobs:
           tar xf /tmp/objdir.tar
           rm /tmp/objdir.tar /tmp/objdir.tar.zst
 
-          # Overwrite .mozconfig with the no-sccache version
-          cat > .mozconfig <<'MOZCONFIG'
-          mk_add_options MOZ_PARALLEL_BUILD=4
-          ac_add_options --enable-optimize
-          ac_add_options --disable-debug
-          ac_add_options --disable-tests
-          ac_add_options --disable-crashreporter
-          ac_add_options --disable-updater
-          ac_add_options --enable-linker=lld
-          MOZCONFIG
-
           OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
           echo "Build directory: $OBJ_DIR"
+
+          # Satisfy the CLOBBER check so incremental rebuild works
+          touch "$OBJ_DIR/CLOBBER"
+
           echo "No .o files present (excluded from artifact)"
           df -h /
           free -h
