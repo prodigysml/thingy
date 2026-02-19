@@ -88,13 +88,23 @@ jobs:
           echo "Packaging $OBJ_DIR for next job..."
           df -h /
 
-          # Tar the obj dir (excluding .o files since we'll recompile them).
-          # This saves only the build system state, generated files, configs.
+          # Only package what the build system needs to do an incremental
+          # rebuild: config.status, generated headers, build backend files.
+          # Exclude all compiled output — it gets regenerated under tracing.
           tar cf /tmp/objdir.tar \
             --exclude='*.o' \
             --exclude='*.a' \
             --exclude='*.so' \
-            --exclude='dist/bin' \
+            --exclude='*.so.*' \
+            --exclude='dist' \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            --exclude='.cargo' \
+            --exclude='target' \
+            --exclude='*.rlib' \
+            --exclude='*.rmeta' \
+            --exclude='*.d' \
+            --exclude='*.pp' \
             "$OBJ_DIR" .mozconfig
 
           ls -lh /tmp/objdir.tar
@@ -132,8 +142,17 @@ jobs:
 
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/lib/node_modules /opt/hostedtoolcache \
+            /usr/share/swift /usr/share/miniconda /usr/local/julia* \
+            /usr/local/share/edge_driver /usr/local/share/gecko_driver \
+            /usr/share/az_* /opt/microsoft /usr/share/gradle* \
+            /usr/share/apache-maven* /usr/share/sbt
           sudo apt-get clean
+          docker rmi $(docker image ls -q) 2>/dev/null || true
+          echo "Disk after cleanup:"
+          df -h /
 
       - name: Add swap
         run: |
