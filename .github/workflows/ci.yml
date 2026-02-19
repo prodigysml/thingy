@@ -10,8 +10,6 @@ jobs:
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
-      SCCACHE_CACHE_SIZE: 5G
-      SCCACHE_DIR: /home/runner/.cache/sccache
     permissions:
       security-events: write
       actions: read
@@ -45,13 +43,6 @@ jobs:
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
           restore-keys: mozbuild-${{ runner.os }}-
 
-      - name: Restore sccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: sccache-${{ runner.os }}-
-
       - name: Setup environment
         run: |
           sudo apt-get update
@@ -64,7 +55,6 @@ jobs:
           ac_add_options --disable-crashreporter
           ac_add_options --disable-updater
           ac_add_options --enable-linker=lld
-          ac_add_options --with-ccache=sccache
           MOZCONFIG
           yes '' | ./mach bootstrap --application-choice=browser
 
@@ -77,16 +67,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Full build with sccache
-        run: ./mach build
-
-      - name: Save sccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/sccache
-          key: sccache-${{ runner.os }}-${{ github.run_id }}
-
       - name: Save mozbuild toolchains
         if: always()
         uses: actions/cache/save@v4
@@ -94,84 +74,22 @@ jobs:
           path: ~/.mozbuild
           key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
 
-      - name: Prepare for CodeQL rebuild
+      - name: CodeQL traced build
         run: |
-          OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
-          if [ -z "$OBJ_DIR" ]; then
-            echo "ERROR: No obj-* directory found after build"
-            exit 1
-          fi
-          echo "Build directory: $OBJ_DIR"
+          echo "Disk space before build:"
+          df -h /
+          free -h
+          echo ""
 
-          sed -i '/--with-ccache/d' .mozconfig
-          sed -i 's/MOZ_PARALLEL_BUILD=4/MOZ_PARALLEL_BUILD=2/' .mozconfig
-          echo "Updated .mozconfig:"
-          cat .mozconfig
-
-          echo "Disk space before cleanup:"
-          df -h / | tail -1
-
-          # Only delete .o files for security-critical directories.
-          # Tracing the full codebase produces too many TRAP files for
-          # CodeQL finalize to handle in 7GB RAM (even with 16GB swap).
-          TARGET_DIRS="
-            dom/ipc dom/media dom/indexedDB dom/canvas dom/cache
-            dom/base dom/bindings dom/fetch dom/file dom/midi
-            ipc/glue
-            gfx/layers gfx/2d gfx/thebes
-            image
-            media/gmp-clearkey
-            accessible/ipc
-            xpcom/io xpcom/threads xpcom/base
-            netwerk/protocol netwerk/base netwerk/cache2
-            security/manager
-            mfbt
-          "
-          DELETED=0
-          for dir in $TARGET_DIRS; do
-            if [ -d "$OBJ_DIR/$dir" ]; then
-              count=$(find "$OBJ_DIR/$dir" -name '*.o' | wc -l)
-              find "$OBJ_DIR/$dir" -name '*.o' -delete
-              echo "  Deleted $count .o files from $OBJ_DIR/$dir"
-              DELETED=$((DELETED + count))
-            fi
-          done
-          if [ -d "$OBJ_DIR/ipc/ipdl" ]; then
-            count=$(find "$OBJ_DIR/ipc/ipdl" -name '*.o' | wc -l)
-            find "$OBJ_DIR/ipc/ipdl" -name '*.o' -delete
-            echo "  Deleted $count .o files from $OBJ_DIR/ipc/ipdl"
-            DELETED=$((DELETED + count))
-          fi
-          echo "Total deleted: $DELETED object files"
-
-          echo "Disk space after cleanup:"
-          df -h / | tail -1
-
-      - name: CodeQL traced rebuild
-        run: |
-          /opt/codeql/codeql database init \
+          /opt/codeql/codeql database create \
             --language=cpp \
-            --source-root=. \
+            --command='./mach build' \
+            --threads=0 \
             /home/runner/codeql-db
-
-          /opt/codeql/codeql database trace-command \
-            /home/runner/codeql-db \
-            -- ./mach build
 
           echo ""
-          echo "Disk space after traced rebuild:"
-          df -h / | tail -1
-
-          echo "TRAP file count:"
-          find /home/runner/codeql-db -name '*.trap*' | wc -l
-
-      - name: Finalize database
-        run: |
-          free -h
-          /opt/codeql/codeql database finalize \
-            --threads=1 \
-            --ram=20480 \
-            /home/runner/codeql-db
+          echo "Disk space after build:"
+          df -h /
 
       - name: Verify database
         run: |
