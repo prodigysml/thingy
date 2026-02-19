@@ -10,6 +10,113 @@ jobs:
     timeout-minutes: 360
     env:
       MOZBUILD_STATE_PATH: /home/runner/.mozbuild
+      SCCACHE_CACHE_SIZE: 5G
+      SCCACHE_DIR: /home/runner/.cache/sccache
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      obj-dir: ${{ steps.find-obj.outputs.obj-dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync upstream
+        run: |
+          git remote add upstream https://github.com/mozilla-firefox/firefox.git
+          git fetch upstream main --depth 1
+          git reset --hard upstream/main
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Restore mozbuild toolchains
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
+          restore-keys: mozbuild-${{ runner.os }}-
+
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: sccache-${{ runner.os }}-
+
+      - name: Setup environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv openssl
+          cat > .mozconfig <<'MOZCONFIG'
+          mk_add_options MOZ_PARALLEL_BUILD=4
+          ac_add_options --enable-optimize
+          ac_add_options --disable-debug
+          ac_add_options --disable-tests
+          ac_add_options --disable-crashreporter
+          ac_add_options --disable-updater
+          ac_add_options --enable-linker=lld
+          ac_add_options --with-ccache=sccache
+          MOZCONFIG
+          yes '' | ./mach bootstrap --application-choice=browser
+
+      - name: Full build with sccache
+        run: ./mach build
+
+      - name: Find obj dir
+        id: find-obj
+        run: echo "obj-dir=$(ls -d obj-* | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Save sccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Save mozbuild toolchains
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
+
+      - name: Package build artifacts for CodeQL job
+        run: |
+          OBJ_DIR="${{ steps.find-obj.outputs.obj-dir }}"
+          echo "Packaging $OBJ_DIR for next job..."
+          df -h /
+
+          # Tar the obj dir (excluding .o files since we'll recompile them).
+          # This saves only the build system state, generated files, configs.
+          tar cf /tmp/objdir.tar \
+            --exclude='*.o' \
+            --exclude='*.a' \
+            --exclude='*.so' \
+            --exclude='dist/bin' \
+            "$OBJ_DIR" .mozconfig
+
+          ls -lh /tmp/objdir.tar
+          echo "Compressed size:"
+          zstd -1 /tmp/objdir.tar -o /tmp/objdir.tar.zst
+          ls -lh /tmp/objdir.tar.zst
+          rm /tmp/objdir.tar
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: objdir-${{ github.run_id }}
+          path: /tmp/objdir.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  codeql:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 360
+    env:
+      MOZBUILD_STATE_PATH: /home/runner/.mozbuild
     permissions:
       security-events: write
       actions: read
@@ -47,6 +154,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
+          # No sccache — CodeQL must see real compiler invocations
           cat > .mozconfig <<'MOZCONFIG'
           mk_add_options MOZ_PARALLEL_BUILD=4
           ac_add_options --enable-optimize
@@ -67,37 +175,64 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Save mozbuild toolchains
-        if: always()
-        uses: actions/cache/save@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.mozbuild
-          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
+          name: objdir-${{ github.run_id }}
+          path: /tmp
 
-      - name: CodeQL traced build
+      - name: Restore build state
         run: |
-          echo "Disk space before build:"
+          echo "Extracting build artifacts..."
+          zstd -d /tmp/objdir.tar.zst -o /tmp/objdir.tar
+          tar xf /tmp/objdir.tar
+          rm /tmp/objdir.tar /tmp/objdir.tar.zst
+
+          # Overwrite .mozconfig with the no-sccache version
+          cat > .mozconfig <<'MOZCONFIG'
+          mk_add_options MOZ_PARALLEL_BUILD=4
+          ac_add_options --enable-optimize
+          ac_add_options --disable-debug
+          ac_add_options --disable-tests
+          ac_add_options --disable-crashreporter
+          ac_add_options --disable-updater
+          ac_add_options --enable-linker=lld
+          MOZCONFIG
+
+          OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
+          echo "Build directory: $OBJ_DIR"
+          echo "No .o files present (excluded from artifact)"
           df -h /
           free -h
-          echo ""
 
-          /opt/codeql/codeql database create \
+      - name: CodeQL traced rebuild
+        run: |
+          /opt/codeql/codeql database init \
             --language=cpp \
-            --command='./mach build' \
-            --threads=0 \
+            --source-root=. \
             /home/runner/codeql-db
 
+          /opt/codeql/codeql database trace-command \
+            /home/runner/codeql-db \
+            -- ./mach build
+
           echo ""
-          echo "Disk space after build:"
+          echo "Disk space after traced rebuild:"
           df -h /
+
+      - name: Finalize database
+        run: |
+          free -h
+          /opt/codeql/codeql database finalize \
+            --threads=1 \
+            --ram=20480 \
+            /home/runner/codeql-db
 
       - name: Verify database
         run: |
           echo "=== Database info ==="
           /opt/codeql/codeql database info /home/runner/codeql-db || true
 
-          echo ""
-          echo "=== Source archive file count ==="
           SRC_COUNT=0
           if [ -d /home/runner/codeql-db/src ]; then
             SRC_COUNT=$(find /home/runner/codeql-db/src -type f | wc -l)
@@ -110,8 +245,6 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "=== Key directories ==="
           for dir in dom gfx ipc xpcom image media netwerk security accessible mfbt; do
             count=0
             if [ -d "/home/runner/codeql-db/src/$dir" ]; then
@@ -120,7 +253,6 @@ jobs:
             echo "  $dir: $count .cpp files"
           done
 
-          echo ""
           echo "Database verification passed."
 
       - name: Package output
