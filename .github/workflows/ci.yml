@@ -6,8 +6,10 @@ on:
 
 jobs:
   codeql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-core
     timeout-minutes: 360
+    env:
+      MOZBUILD_STATE_PATH: /home/runner/.mozbuild
     permissions:
       security-events: write
       actions: read
@@ -43,6 +45,29 @@ jobs:
           sudo mkswap /swapfile
           sudo swapon /swapfile
 
+      - name: Restore mozbuild toolchains
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
+          restore-keys: mozbuild-${{ runner.os }}-
+
+      - name: Setup environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv openssl
+          cat > .mozconfig <<'MOZCONFIG'
+          mk_add_options MOZ_PARALLEL_BUILD=16
+          mk_add_options AUTOCLOBBER=1
+          ac_add_options --enable-optimize
+          ac_add_options --disable-debug
+          ac_add_options --disable-tests
+          ac_add_options --disable-crashreporter
+          ac_add_options --disable-updater
+          ac_add_options --enable-linker=lld
+          MOZCONFIG
+          yes '' | ./mach bootstrap --application-choice=browser
+
       - name: Install CodeQL
         run: |
           LATEST=$(gh api /repos/github/codeql-action/releases/latest --jq .tag_name)
@@ -52,21 +77,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create CodeQL database (no-build mode)
+      - name: Save mozbuild toolchains
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.mozbuild
+          key: mozbuild-${{ runner.os }}-${{ hashFiles('python/mozboot/**') }}
+
+      - name: CodeQL traced build
         run: |
-          echo "Disk space before:"
+          echo "Disk space before build:"
           df -h /
           free -h
           echo ""
 
           /opt/codeql/codeql database create \
             --language=cpp \
-            --build-mode=none \
-            --threads=4 \
+            --command='./mach build' \
+            --threads=8 \
+            --ram=49152 \
             /home/runner/codeql-db
 
           echo ""
-          echo "Disk space after:"
+          echo "Disk space after build:"
           df -h /
 
       - name: Verify database
