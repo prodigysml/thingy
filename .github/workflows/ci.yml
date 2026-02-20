@@ -88,23 +88,12 @@ jobs:
           echo "Packaging $OBJ_DIR for next job..."
           df -h /
 
-          # Only package what the build system needs to do an incremental
-          # rebuild: config.status, generated headers, build backend files.
-          # Exclude all compiled output — it gets regenerated under tracing.
+          # Keep .o files! Job 2 only deletes .o for targeted directories.
+          # Without the rest, mach build would try to recompile everything.
           tar cf /tmp/objdir.tar \
-            --exclude='*.o' \
-            --exclude='*.a' \
-            --exclude='*.so' \
-            --exclude='*.so.*' \
-            --exclude='dist' \
+            --exclude='dist/bin' \
             --exclude='*.pyc' \
             --exclude='__pycache__' \
-            --exclude='.cargo' \
-            --exclude='target' \
-            --exclude='*.rlib' \
-            --exclude='*.rmeta' \
-            --exclude='*.d' \
-            --exclude='*.pp' \
             "$OBJ_DIR" .mozconfig
 
           ls -lh /tmp/objdir.tar
@@ -173,7 +162,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-venv openssl
-          # No sccache — CodeQL must see real compiler invocations
           cat > .mozconfig <<'MOZCONFIG'
           mk_add_options MOZ_PARALLEL_BUILD=4
           mk_add_options AUTOCLOBBER=1
@@ -201,7 +189,7 @@ jobs:
           name: objdir-${{ github.run_id }}
           path: /tmp
 
-      - name: Restore build state
+      - name: Restore build state and delete targeted .o files
         run: |
           echo "Extracting build artifacts..."
           zstd -d /tmp/objdir.tar.zst -o /tmp/objdir.tar
@@ -211,10 +199,34 @@ jobs:
           OBJ_DIR=$(ls -d obj-* 2>/dev/null | head -1)
           echo "Build directory: $OBJ_DIR"
 
-          # Satisfy the CLOBBER check so incremental rebuild works
           touch "$OBJ_DIR/CLOBBER"
 
-          echo "No .o files present (excluded from artifact)"
+          # Only delete .o files for security-relevant directories.
+          # The rest stay intact so mach build skips them.
+          TARGET_DIRS="
+            dom/ipc dom/media dom/indexedDB dom/canvas dom/cache
+            dom/base dom/bindings dom/fetch dom/file dom/midi
+            ipc/glue ipc/ipdl
+            gfx/layers gfx/2d gfx/thebes
+            image
+            media/gmp-clearkey
+            accessible/ipc
+            xpcom/io xpcom/threads xpcom/base
+            netwerk/protocol netwerk/base netwerk/cache2
+            security/manager
+            mfbt
+          "
+          DELETED=0
+          for dir in $TARGET_DIRS; do
+            if [ -d "$OBJ_DIR/$dir" ]; then
+              count=$(find "$OBJ_DIR/$dir" -name '*.o' | wc -l)
+              find "$OBJ_DIR/$dir" -name '*.o' -delete
+              echo "  Deleted $count .o files from $OBJ_DIR/$dir"
+              DELETED=$((DELETED + count))
+            fi
+          done
+          echo "Total deleted: $DELETED object files"
+
           df -h /
           free -h
 
